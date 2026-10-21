@@ -1,14 +1,15 @@
-# 📌 Pinterest Video Downloader & 🤖 Gemini AI Telegram Bot
+# 📌 Pinterest Video Downloader & 🎵 Shazam Music MP3 & 🤖 Gemini AI Bot
 
-Ushbu bot **Python** dasturlash tili va zamonaviy asinxron **Aiogram 3** freymvorki yordamida yaratilgan. Bot quyidagi 2 ta kuchli bo'limdan iborat:
+Ushbu bot **Python** dasturlash tili va zamonaviy asinxron **Aiogram 3** freymvorki yordamida yaratilgan. Bot quyidagi kuchli imkoniyatlarga ega:
 1. **Pinterest Video Downloader:** Pinterest video havolasini (link) yuborganingizda, uni bir zumda **MP4** video formatida yuklab beradi.
-2. **Google Gemini AI Chat:** Eng so'nggi Google Gemini sun'iy intellekti bilan to'g'ridan-to'g'ri Telegram orqali o'zbek tilida muloqot qilish, savollarga tezkor javob olish va suhbatlashish.
+2. **🎵 Musiqa va MP3 (Shazam orqali aniqlash):** Har bir yuklangan videodagi musiqani Shazam algoritmi orqali aniqlab, yuqori sifatli **MP3** audio formatida (nomi, ijrochisi, janri bilan) jo'natadi! Shuningdek, Telegram orqali to'g'ridan-to'g'ri yuborilgan har qanday videodan ham musiqani ajratib MP3 qilib beradi.
+3. **🤖 Google Gemini AI Chat:** Eng so'nggi Google Gemini sun'iy intellekti bilan to'g'ridan-to'g'ri Telegram orqali o'zbek tilida matnli va ovozli muloqot qilish.
 
 ---
 
 ## ✨ Imkoniyatlari
 
-### 🎬 Pinterest Video Yuklash
+### 🎬 Pinterest Video Yuklash & 🎵 MP3 Musiqa
 - 🎯 **Barcha turdagi havolalarni qo'llab-quvvatlaydi:**
   - Qisqa havolalar: `https://pin.it/...`
   - To'liq havolalar: `https://www.pinterest.com/pin/...`
@@ -16,7 +17,11 @@ Ushbu bot **Python** dasturlash tili va zamonaviy asinxron **Aiogram 3** freymvo
 - 🚀 **Ikki bosqichli yuklash tizimi:**
   - 1-bosqich: To'g'ridan-to'g'ri MP4 oqimi (bir necha soniyada)
   - 2-bosqich: `yt-dlp` dvigateli (zaxira tizim)
-- 🎬 **Haqiqiy Telegram Video:** Streamable MP4 ko'rinishida yuboriladi.
+- 🎧 **Musiqani Shazam orqali aniqlash:**
+  - Videodagi qo'shiq nomi, ijrochisi va janri avtomatik aniqlanadi.
+  - Video bilan birga tayyor Telegram audio (MP3) fayli jo'natiladi.
+- 📹 **To'g'ridan-to'g'ri videolarni MP3 ga o'tkazish:**
+  - Botga istalgan video yuborsangiz, undagi musiqani ajratib MP3 formatida qaytaradi.
 - 🧹 **Xotirani avtomatik tozalash:** Yuklangan fayllar avtomatik tarzda tozalanadi.
 
 ### 🤖 Google Gemini AI Chat (Matn va Ovoz)
@@ -36,14 +41,16 @@ Ushbu bot **Python** dasturlash tili va zamonaviy asinxron **Aiogram 3** freymvo
 ```text
 pinterest bot/
 ├── bot.py             # Botning asosiy kodi (Aiogram 3, menyu, audio va marshrutlar)
+├── audio_service.py   # FFmpeg orqali MP3 ajratish va Shazam song recognition moduli
 ├── ai_chat.py         # Google Gemini AI integratsiyasi va muloqot xizmati
 ├── tts_service.py     # Microsoft Edge TTS va FFmpeg bilan ovoz yaratish
 ├── downloader.py      # Pinterest videosini yuklash moduli
 ├── config.py          # Sozlamalar va tekshiruvlar
 ├── requirements.txt   # Kerakli Python kutubxonalari
-├── start.bat          # Windows uchun bitta bosishda ishga tushirish fayli
+├── start.bat          # Windows uchun bitta bosishda ishga tushirish fayli (avto-restart bilan)
 ├── stop_bot.bat       # Bot jarayonini to'xtatish
 ├── run_background.vbs # Fon rejimida oynasiz ishga tushirish
+├── run_loop.bat       # Avtomatik qayta ulanish davrasi
 ├── .env.example       # Konfiguratsiya namunasi
 ├── .env               # Telegram bot va Gemini API kaliti
 └── README.md          # Qo'llanma

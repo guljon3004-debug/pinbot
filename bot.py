@@ -47,6 +47,7 @@ from downloader import (
 )
 from ai_chat import gemini_service
 from tts_service import generate_voice_message
+from audio_service import process_video_audio
 
 # Log sozlamalari
 logging.basicConfig(
@@ -153,10 +154,10 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎬 Pinterest Video Yuklash"), KeyboardButton(text="🤖 AI Chat (Gemini)")],
-            [KeyboardButton(text="ℹ️ Yordam")]
+            [KeyboardButton(text="🎵 Musiqani aniqlash (MP3)"), KeyboardButton(text="ℹ️ Yordam")]
         ],
         resize_keyboard=True,
-        input_field_placeholder="Havola yuboring yoki bo'lim tanlang..."
+        input_field_placeholder="Havola yoki video yuboring..."
     )
 
 
@@ -268,7 +269,9 @@ async def start_handler(message: types.Message):
         f"Xush kelibsiz! Ushbu bot quyidagi imkoniyatlarga ega:\n\n"
         f"1️⃣ <b>🎬 Pinterest Video Downloader:</b>\n"
         f"Pinterest'dagi istalgan video havolasini yuboring, uni bir necha soniyada <b>MP4</b> formatida yuklab beraman!\n\n"
-        f"2️⃣ <b>🤖 Google Gemini AI Chat (Matn va Ovoz):</b>\n"
+        f"2️⃣ <b>🎵 Musiqani aniqlash va MP3 olish (Shazam):</b>\n"
+        f"Har bir yuklangan videodagi qo'shiqni avtomatik aniqlayman va uni <b>MP3 audio</b> formatida ham taqdim etaman! Shuningdek, istalgan videoni botga yuborsangiz, undagi musiqani ajratib MP3 qilib beraman.\n\n"
+        f"3️⃣ <b>🤖 Google Gemini AI Chat (Matn va Ovoz):</b>\n"
         f"Gemini sun'iy intellekti bilan suhbatlashing! Menga <b>ovozli xabar (audio)</b> yuborsangiz, men ham sizga <b>ovozli formatda</b> javob qaytaraman! 🎙⚡️\n\n"
         f"👥 <b>Guruhlarda ishlash:</b>\n"
         f"Botni guruhga qo'shib, unga savol berishingiz mumkin. Bot guruhda faqat o'zi chaqirilganda javob beradi va boshqa suhbatlarga xalaqit bermaydi!\n\n"
@@ -289,6 +292,9 @@ async def help_handler(message: types.Message):
         "1. Pinterest ilovasida videoni oching.\n"
         "2. «Ulashish» (Share) -> «Havolani nusxalash» (Copy link) ni bosing.\n"
         "3. Havolani shu botga yuboring — bot bir zumda MP4 qilib qaytaradi! ⚡️\n\n"
+        "🎵 <b>Musiqani aniqlash va MP3 formatga o'tkazish (Shazam):</b>\n"
+        "• Pinterest'dan video yuklaganingizda bot videodagi qo'shiqni Shazam orqali aniqlaydi va tayyor <b>MP3 audio</b> formatida ham yuboradi.\n"
+        "• Shuningdek, Telegram orqali istalgan videoni to'g'ridan-to'g'ri botga yuborsangiz ham, bot undagi musiqani MP3 qilib chiqarib beradi! 🎧\n\n"
         "🤖 <b>Gemini AI Chat bilan gaplashish:</b>\n"
         "• <b>«🤖 AI Chat (Gemini)»</b> tugmasini bosing va to'g'ridan-to'g'ri suhbatlashing.\n"
         "• Yoki istalgan paytda <code>/ai savolingiz</code> ko'rinishida savol bering.\n"
@@ -607,6 +613,15 @@ async def message_router_handler(message: types.Message):
         )
         return
 
+    if user_text in ["🎵 Musiqani aniqlash (MP3)", "/music"]:
+        await message.answer(
+            "🎵 <b>Videodan musiqa aniqlash va MP3 formatga o'tkazish:</b>\n\n"
+            "1️⃣ <b>Pinterest havolasi:</b> Pinterest'dan istalgan video havolasini yuboring. Bot videoning o'zini ham, undagi qo'shiqni ham (Shazam orqali aniqlab) <b>MP3 formatda</b> taqdim etadi!\n\n"
+            "2️⃣ <b>To'g'ridan-to'g'ri video:</b> Telegram orqali botga istalgan video yuboring yoki forward qiling. Bot videodagi musiqani Shazam orqali aniqlaydi va sizga MP3 audio formatda taqdim etadi! 🎧",
+            parse_mode="HTML"
+        )
+        return
+
     if user_text == "ℹ️ Yordam":
         await help_handler(message)
         return
@@ -622,27 +637,136 @@ async def message_router_handler(message: types.Message):
     # 8. Asosiy rejimda bo'lib, Pinterest havolasi ham bo'lmasa
     await message.reply(
         "ℹ️ <b>Pinterest havolasi topilmadi!</b>\n\n"
-        "• 📌 Video yuklash uchun Pinterest havolasini yuboring.\n"
+        "• 📌 Video va MP3 musiqa yuklash uchun Pinterest havolasini yuboring.\n"
+        "• 📹 Yoki istalgan videoni botga yuborsangiz, undagi qo'shiqni MP3 qilib beraman.\n"
         "• 🤖 Gemini AI bilan suhbatlashish uchun esa <b>«🤖 AI Chat (Gemini)»</b> tugmasini bosing yoki <code>/ai savolingiz</code> deb yozing!",
         reply_markup=get_quick_ai_inline_kb(),
         parse_mode="HTML"
     )
 
 
+# ==========================================
+# TO'G'RIDAN-TO'G'RI YUBORILGAN VIDEOLARNI QAYTA ISHLASH (MP3 + SHAZAM)
+# ==========================================
+
+@dp.message(F.video | (F.document & F.document.mime_type.startswith("video/")))
+async def direct_video_handler(message: types.Message):
+    """
+    Foydalanuvchi Telegram orqali to'g'ridan-to'g'ri video yuborganida,
+    undagi musiqani aniqlab, MP3 audio formatida qaytaradi.
+    """
+    user_id = message.from_user.id if message.from_user else 0
+    if not await is_subscribed(user_id):
+        await send_subscription_prompt(message)
+        return
+
+    video_obj = message.video or message.document
+    if not video_obj:
+        return
+
+    # Telegram Bot API get_file cheklovi (20 MB)
+    if video_obj.file_size and video_obj.file_size > 20 * 1024 * 1024:
+        await message.reply(
+            "⚠️ <b>Video hajmi 20 MB dan katta!</b>\n\n"
+            "Telegram botlari to'g'ridan-to'g'ri faqat <b>20 MB</b> gacha bo'lgan videolarni qabul qila oladi.\n"
+            "Agar video Pinterest'da bo'lsa, uning havolasini yuborsangiz, bot istalgan hajmda yuklab beradi!",
+            parse_mode="HTML"
+        )
+        return
+
+    status_msg = await message.reply("⚡️ <b>Video qabul qilindi. Musiqa aniqlanmoqda va MP3 ga o'tkazilmoqda...</b>", parse_mode="HTML")
+    video_temp_path = None
+    mp3_temp_path = None
+
+    try:
+        async with ChatActionSender(bot=bot, chat_id=message.chat.id, action=ChatAction.RECORD_VOICE):
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username or "PinterestBot"
+
+            os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+            unique_id = uuid.uuid4().hex[:8]
+            video_temp_path = os.path.join(DOWNLOADS_DIR, f"direct_vid_{unique_id}.mp4")
+
+            file_info = await bot.get_file(video_obj.file_id)
+            await bot.download_file(file_info.file_path, video_temp_path)
+
+            audio_res = await process_video_audio(
+                video_temp_path,
+                DOWNLOADS_DIR,
+                fallback_title="Telegram Video Audio",
+                fallback_artist="Audio"
+            )
+
+            if not audio_res.get("has_audio") or not audio_res.get("mp3_path"):
+                await status_msg.edit_text("⚠️ <b>Ushbu videoda audio trek topilmadi (ovozsiz video).</b>", parse_mode="HTML")
+                return
+
+            mp3_temp_path = audio_res["mp3_path"]
+            if audio_res.get("matched"):
+                caption = (
+                    f"🎵 <b>{audio_res['title']} — {audio_res['artist']}</b>\n"
+                )
+                if audio_res.get("genre"):
+                    caption += f"🏷 <b>Janr:</b> {audio_res['genre']}\n"
+                caption += (
+                    f"🔍 <i>Shazam orqali aniqlandi</i>\n\n"
+                    f"📥 @{bot_username} orqali olindi."
+                )
+            else:
+                caption = (
+                    f"🎵 <b>Audio trek (MP3 formatda)</b>\n"
+                    f"ℹ️ <i>Videodan ajratib olingan audio</i>\n\n"
+                    f"📥 @{bot_username} orqali olindi."
+                )
+
+            audio_fs = FSInputFile(mp3_temp_path, filename=f"{audio_res['title'][:50]}.mp3")
+            await message.reply_audio(
+                audio=audio_fs,
+                title=audio_res["title"],
+                performer=audio_res["artist"],
+                duration=audio_res.get("duration"),
+                caption=caption,
+                parse_mode="HTML"
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.exception("Videoni qayta ishlashda xatolik:")
+        await status_msg.edit_text(f"⚠️ <b>Xatolik yuz berdi:</b> {str(e)}", parse_mode="HTML")
+    finally:
+        if video_temp_path and os.path.exists(video_temp_path):
+            cleanup_file(video_temp_path)
+        if mp3_temp_path and os.path.exists(mp3_temp_path):
+            cleanup_file(mp3_temp_path)
+
+
+# ==========================================
+# PINTEREST YUKLASH JARAYONI (VIDEO + MP3 AUDIO)
+# ==========================================
+
 async def process_pinterest_download(message: types.Message, pinterest_url: str):
-    """Pinterest videosini yuklash jarayoni."""
+    """Pinterest videosini yuklash va musiqasini MP3 formatda aniqlab berish jarayoni."""
     global http_session
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession()
 
     status_msg = await message.reply("⚡️ <b>Video tahlil qilinmoqda...</b>", parse_mode="HTML")
-    temp_file_to_clean = None
+    temp_files_to_clean = []
     t_start = time.time()
 
     try:
         async with ChatActionSender(bot=bot, chat_id=message.chat.id, action=ChatAction.UPLOAD_VIDEO):
             bot_info = await bot.get_me()
             bot_username = bot_info.username or "PinterestBot"
+
+            video_filepath = None
+            raw_title = "Pinterest Video"
+            video_duration = None
+            video_width = None
+            video_height = None
 
             # 1-BOSQICH: To'g'ridan-to'g'ri tayyor MP4 video oqimini qidiramiz
             video_info = await extract_fast_direct_video(pinterest_url, http_session)
@@ -651,80 +775,99 @@ async def process_pinterest_download(message: types.Message, pinterest_url: str)
                 logger.info(f"MP4 topildi ({time.time() - t_start:.2f}s): {video_info['direct_url']}")
                 direct_url = video_info["direct_url"]
                 raw_title = video_info.get("title") or "Pinterest Video"
-                if len(raw_title) > 200:
-                    raw_title = raw_title[:197] + "..."
+                video_duration = video_info.get("duration")
+                video_width = video_info.get("width")
+                video_height = video_info.get("height")
 
-                caption = (
-                    f"🎬 <b>{raw_title}</b>\n\n"
-                    f"📥 @{bot_username} orqali yuklab olindi."
-                )
-
-                # 1.1: Telegram serverlari orqali to'g'ridan-to'g'ri jo'natish
-                try:
-                    url_file = URLInputFile(direct_url, filename="pinterest_video.mp4")
-                    await message.reply_video(
-                        video=url_file,
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                        duration=video_info.get("duration"),
-                        width=video_info.get("width"),
-                        height=video_info.get("height")
-                    )
-                    logger.info(f"Video URLInputFile orqali yuborildi ({time.time() - t_start:.2f}s)")
-                    try:
-                        await status_msg.delete()
-                    except Exception:
-                        pass
-                    return
-                except Exception as url_err:
-                    logger.warning(f"URLInputFile xatosi ({url_err}), faylni to'g'ridan-to'g'ri yuklaymiz...")
-
-                # 1.2: To'g'ridan-to'g'ri MP4 oqimini diskka yuklash
+                # To'g'ridan-to'g'ri faylni diskka yuklaymiz (audio ajratish uchun)
                 downloaded_path = await download_direct_mp4_file(direct_url, http_session, DOWNLOADS_DIR)
                 if downloaded_path:
-                    temp_file_to_clean = downloaded_path
-                    fs_file = FSInputFile(downloaded_path, filename="pinterest_video.mp4")
-                    await message.reply_video(
-                        video=fs_file,
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True,
-                        duration=video_info.get("duration"),
-                        width=video_info.get("width"),
-                        height=video_info.get("height")
-                    )
-                    logger.info(f"Video to'g'ridan-to'g'ri fayl orqali yuborildi ({time.time() - t_start:.2f}s)")
-                    try:
-                        await status_msg.delete()
-                    except Exception:
-                        pass
-                    return
+                    video_filepath = downloaded_path
+                    temp_files_to_clean.append(downloaded_path)
 
-            # 2-BOSQICH: Agar to'g'ridan-to'g'ri MP4 topilmasa, yt-dlp ishga tushadi
-            logger.info("To'g'ridan-to'g'ri MP4 topilmadi. yt-dlp dvigateliga murojaat qilinmoqda...")
-            ytdlp_data = await download_with_ytdlp_fast(pinterest_url, DOWNLOADS_DIR)
-            temp_file_to_clean = ytdlp_data["filepath"]
+            # 2-BOSQICH: Agar to'g'ridan-to'g'ri MP4 topilmasa yoki yuklanmasa, yt-dlp ishga tushadi
+            if not video_filepath:
+                logger.info("To'g'ridan-to'g'ri MP4 topilmadi yoki yuklanmadi. yt-dlp dvigateliga murojaat qilinmoqda...")
+                ytdlp_data = await download_with_ytdlp_fast(pinterest_url, DOWNLOADS_DIR)
+                video_filepath = ytdlp_data["filepath"]
+                temp_files_to_clean.append(video_filepath)
+                raw_title = ytdlp_data.get("title") or raw_title
+                video_duration = ytdlp_data.get("duration") or video_duration
+                video_width = ytdlp_data.get("width") or video_width
+                video_height = ytdlp_data.get("height") or video_height
 
-            raw_title = ytdlp_data.get("title") or "Pinterest Video"
             if len(raw_title) > 200:
-                raw_title = raw_title[:197] + "..."
+                clean_title = raw_title[:197] + "..."
+            else:
+                clean_title = raw_title
 
-            caption = (
-                f"🎬 <b>{raw_title}</b>\n\n"
+            caption_video = (
+                f"🎬 <b>{clean_title}</b>\n\n"
                 f"📥 @{bot_username} orqali yuklab olindi."
             )
 
-            fs_file = FSInputFile(temp_file_to_clean, filename="pinterest_video.mp4")
+            # 1. MP4 Videoni yuboramiz
+            fs_video = FSInputFile(video_filepath, filename="pinterest_video.mp4")
             await message.reply_video(
-                video=fs_file,
-                caption=caption,
+                video=fs_video,
+                caption=caption_video,
                 parse_mode="HTML",
                 supports_streaming=True,
-                duration=ytdlp_data.get("duration"),
-                width=ytdlp_data.get("width"),
-                height=ytdlp_data.get("height")
+                duration=video_duration,
+                width=video_width,
+                height=video_height
             )
+            logger.info(f"Video yuborildi ({time.time() - t_start:.2f}s)")
+
+            # Statusni yangilaymiz: musiqani aniqlash
+            try:
+                await status_msg.edit_text("🎵 <b>Videodagi musiqa aniqlanmoqda va MP3 ga o'tkazilmoqda...</b>", parse_mode="HTML")
+            except Exception:
+                pass
+
+            # 2. Videodan MP3 audio ajratamiz va Shazam orqali qo'shiqni aniqlaymiz
+            audio_data = await process_video_audio(
+                video_path=video_filepath,
+                output_dir=DOWNLOADS_DIR,
+                fallback_title=clean_title,
+                fallback_artist="Pinterest"
+            )
+
+            if audio_data.get("has_audio") and audio_data.get("mp3_path"):
+                mp3_file = audio_data["mp3_path"]
+                temp_files_to_clean.append(mp3_file)
+
+                if audio_data.get("matched"):
+                    caption_audio = (
+                        f"🎵 <b>{audio_data['title']} — {audio_data['artist']}</b>\n"
+                    )
+                    if audio_data.get("genre"):
+                        caption_audio += f"🏷 <b>Janr:</b> {audio_data['genre']}\n"
+                    caption_audio += (
+                        f"🔍 <i>Shazam orqali aniqlandi</i>\n\n"
+                        f"📥 @{bot_username} orqali yuklab olindi."
+                    )
+                else:
+                    caption_audio = (
+                        f"🎵 <b>Audio trek (MP3 formatda)</b>\n"
+                        f"🎬 {clean_title}\n\n"
+                        f"📥 @{bot_username} orqali yuklab olindi."
+                    )
+
+                audio_fs = FSInputFile(
+                    mp3_file,
+                    filename=f"{audio_data['title'][:40]}.mp3"
+                )
+                await message.reply_audio(
+                    audio=audio_fs,
+                    title=audio_data["title"],
+                    performer=audio_data["artist"],
+                    duration=audio_data.get("duration"),
+                    caption=caption_audio,
+                    parse_mode="HTML"
+                )
+                logger.info(f"MP3 audio yuborildi ({time.time() - t_start:.2f}s)")
+
             try:
                 await status_msg.delete()
             except Exception:
@@ -743,8 +886,9 @@ async def process_pinterest_download(message: types.Message, pinterest_url: str)
             parse_mode="HTML"
         )
     finally:
-        if temp_file_to_clean:
-            cleanup_file(temp_file_to_clean)
+        for f in temp_files_to_clean:
+            cleanup_file(f)
+
 
 
 async def main():
@@ -757,6 +901,7 @@ async def main():
     # Telegram menyusi uchun buyruqlarni o'rnatamiz
     commands = [
         BotCommand(command="start", description="Botni ishga tushirish va menyu"),
+        BotCommand(command="music", description="Musiqani aniqlash (Shazam + MP3)"),
         BotCommand(command="ai", description="Gemini AI Chat / Savol berish"),
         BotCommand(command="clear", description="AI suhbat tarixini tozalash"),
         BotCommand(command="help", description="Qo'llanma va yordam"),
@@ -770,7 +915,7 @@ async def main():
     bot_info = await bot.get_me()
     print("=" * 60, flush=True)
     print(f"Bot muvaffaqiyatli ishga tushdi: @{bot_info.username}", flush=True)
-    print("Pinterest Video Downloader + Google Gemini AI Chat faollashtirildi!", flush=True)
+    print("Pinterest MP4 Video + MP3 Musiqa (Shazam) + Google Gemini AI Chat!", flush=True)
     if REQUIRED_CHANNEL:
         print(f"Majburiy obuna kanali: {REQUIRED_CHANNEL}", flush=True)
     print("Guruhlarda chaqirilganda javob berish faollashtirildi!", flush=True)
