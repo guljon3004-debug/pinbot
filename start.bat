@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 > nul
-title Pinterest Video Downloader Bot
+title Pinterest Video Downloader Bot (@jurpinbot)
 color 0A
 
 echo ======================================================
-echo       PINTEREST VIDEO DOWNLOADER TELEGRAM BOT
+echo       PINTEREST VIDEO DOWNLOADER & GEMINI AI BOT
 echo ======================================================
 echo.
 
@@ -25,14 +25,11 @@ if not exist .env (
     )
 )
 
-echo Bot ishga tushirilmoqda...
-echo To'xtatish uchun: Ctrl + C
-echo.
-
+:loop
+echo [%date% %time%] Bot ishga tushirilmoqda (@jurpinbot)...
 python bot.py
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [OGOHLANTIRISH] Bot xatolik bilan to'xtadi.
-    pause
-)
+echo.
+echo [OGOHLANTIRISH] Bot to'xtadi yoki internet uzildi. 5 soniyadan keyin qayta ishga tushadi...
+echo To'xtatish uchun ushbu oynani yoping yoki Ctrl + C bosing.
+ping 127.0.0.1 -n 6 >nul
+goto loop
