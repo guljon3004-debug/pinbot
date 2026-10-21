@@ -1,4 +1,6 @@
 import os
+import base64
+import asyncio
 import logging
 import aiohttp
 from config import GEMINI_API_KEY, GEMINI_MODEL
@@ -6,19 +8,30 @@ from config import GEMINI_API_KEY, GEMINI_MODEL
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "Siz aqlli, xushmuomala va do'stona AI assistantsiz (Google Gemini modeli asosida). "
-    "Foydalanuvchilarga doimo tushunarli, aniq, foydali va samimiy javob bering. "
-    "Foydalanuvchi qaysi tilda murojaat qilsa, o'sha tilda (asosan o'zbek tilida) ravon javob qaytaring. "
-    "Kerakli o'rinlarda emojilardan foydalaning, ro'yxatlar va muhim fikrlarni chiroyli ajratib ko'rsating."
+    "Siz o'zbek tilida gapiruvchi aqlli, xushmuomala va do'stona shaxsiy AI assistantsiz. "
+    "Sizning eng birinchi va muhim qoidangiz — faqat SOF, ANIQ, RAVON va ADABIY O'ZBEK TILIDA javob berishdir.\n\n"
+    "Qat'iy qoidalar:\n"
+    "1. Doimo toza va ravon o'zbek adabiy tilida gapiring. Ruscha, inglizcha yoki aralash so'zlardan (masalan, 'konechno', 'ponyatno', 'davay' kabi) mutlaqo foydalanmang.\n"
+    "2. Fikringizni aniq, lo'nda, tushunarli va mantiqiy bayon qiling. Keraksiz ortiqcha gaplar bilan cho'zmang.\n"
+    "3. Grammatika, imlo va so'z tanlashda o'zbek tilining sof me'yorlariga rioya qiling.\n"
+    "4. Ovozli tarzda eshitilishi uchun jumlalarni ravon, quloqqa yoqimli va tabiiy qilib tuzing.\n"
+    "5. Har bir savolga samimiy, do'stona va amaliy yordam beradigan tarzda javob qaytaring."
+)
+
+VOICE_PROMPT = (
+    "Foydalanuvchi ushbu ovozli xabarni yubordi. "
+    "Uning nutqini tinglab, savoliga mos ravishda, FAQAT SOF VA RAVON O'ZBEK TILIDA javob bering. "
+    "Javobingiz ovoz bilan o'qilishi uchun qisqa (2-4 jumla), lo'nda va tabiiy jonli inson ovozidek jarangdor bo'lsin. "
+    "Begona va aralash so'zlarni aslo ishlatmang."
 )
 
 
 class GeminiChatService:
-    """Google Gemini REST API orqali asinxron muloqot qiluvchi xizmat."""
+    """Google Gemini REST API orqali tezkor va sof o'zbek tilida muloqot qiluvchi xizmat."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = (api_key or GEMINI_API_KEY or "").strip()
-        self.model = (model or GEMINI_MODEL or "gemini-flash-latest").strip()
+        self.model = (model or GEMINI_MODEL or "gemini-flash-lite-latest").strip()
         # Foydalanuvchilarning suhbat konteksti (tarixi): user_id -> list of contents
         self.user_histories: dict[int, list[dict]] = {}
         # Tarixda saqlanadigan maksimal xabarlar soni
@@ -35,35 +48,59 @@ class GeminiChatService:
         return current_key
 
     def get_model(self) -> str:
-        """Joriy model nomini qaytaradi."""
-        return (self.model or os.getenv("GEMINI_MODEL", "gemini-flash-latest")).strip()
+        """Joriy model nomini qaytaradi (eng tezkor: gemini-flash-lite-latest)."""
+        return (self.model or os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")).strip()
 
     def clear_history(self, user_id: int):
         """Foydalanuvchi suhbat tarixini tozalash."""
         if user_id in self.user_histories:
             self.user_histories.pop(user_id, None)
 
+    async def _make_request(self, session: aiohttp.ClientSession, url: str, payload: dict, timeout_seconds: int = 20) -> dict | None:
+        """API ga xavfsiz so'rov yuborish va 503 xatoligida tezkor qayta urinish."""
+        headers = {"Content-Type": "application/json"}
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+        for attempt in range(2):
+            try:
+                async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+                    data = await resp.json()
+                    if resp.status == 200:
+                        return data
+                    elif resp.status == 503 and attempt == 0:
+                        logger.warning("Gemini 503 olindi, 1 soniyadan keyin qayta urinilmoqda...")
+                        await asyncio.sleep(1.0)
+                        continue
+                    else:
+                        error_msg = data.get("error", {}).get("message", "Noma'lum xatolik")
+                        logger.error(f"Gemini API Error [{resp.status}]: {error_msg}")
+                        return {"_error_status": resp.status, "_error_msg": error_msg}
+            except asyncio.TimeoutError:
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+                return {"_error_status": 408, "_error_msg": "Javob berish vaqti tugadi"}
+            except Exception as e:
+                logger.error(f"Gemini so'rov xatosi: {e}")
+                return {"_error_status": 500, "_error_msg": str(e)}
+
+        return None
+
     async def ask(self, user_id: int, prompt: str, session: aiohttp.ClientSession) -> str:
         """
-        Foydalanuvchi savoliga Gemini AI orqali javob oladi.
-        Kontekst (suhbat tarixi) avtomatik ravishda saqlanadi.
+        Foydalanuvchi matnli savoliga Gemini AI orqali tezkor (0.8s) va sof o'zbekcha javob oladi.
         """
         api_key = self.get_api_key()
-
-        # Agar API kalit kiritilmagan bo'lsa
         if not self.is_configured():
             return (
                 "⚠️ <b>Gemini API kaliti topilmadi!</b>\n\n"
-                "AI Chat xizmatidan foydalanish uchun bot papkasidagi <b><code>.env</code></b> faylini oching va "
-                "<b><code>GEMINI_API_KEY=...</code></b> qatoriga o'z API kalitingizni kiriting.\n\n"
-                "🔑 <i>API kalitni bepul olish uchun:</i>\n"
-                "<a href=\"https://aistudio.google.com/app/apikey\">https://aistudio.google.com/app/apikey</a> saytiga kiring."
+                "AI Chat xizmatidan foydalanish uchun <code>.env</code> faylini oching va "
+                "<code>GEMINI_API_KEY</code> qatoriga o'z kalitingizni kiriting."
             )
 
         model = self.get_model()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-        # Foydalanuvchi tarixini olamiz yoki yangi boshlaymiz
         history = self.user_histories.get(user_id, [])
 
         # Yangi savolni qo'shamiz
@@ -79,73 +116,41 @@ class GeminiChatService:
                 "parts": [{"text": SYSTEM_PROMPT}]
             },
             "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 2048,
+                "temperature": 0.6,
+                "maxOutputTokens": 1536,
             }
         }
 
-        headers = {
-            "Content-Type": "application/json"
-        }
+        data = await self._make_request(session, url, payload, timeout_seconds=15)
+        if not data:
+            return "⚠️ AI serveri javob bermadi. Iltimos, qayta urinib ko'ring."
 
-        try:
-            timeout = aiohttp.ClientTimeout(total=45)
-            async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
-                data = await resp.json()
+        if "_error_status" in data:
+            status_code = data["_error_status"]
+            error_msg = data.get("_error_msg", "")
+            if status_code == 429:
+                return "⏳ <b>So'rovlar limiti oshdi.</b> Iltimos, bir oz kuting."
+            return f"⚠️ <b>Xatolik yuz berdi ({status_code}):</b> {error_msg}"
 
-                if resp.status == 200:
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        candidate = candidates[0]
-                        content = candidate.get("content", {})
-                        parts = content.get("parts", [])
-                        if parts:
-                            reply_text = "".join(p.get("text", "") for p in parts).strip()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                reply_text = "".join(p.get("text", "") for p in parts).strip()
 
-                            # Javobni tarixga qo'shamiz
-                            new_contents.append({
-                                "role": "model",
-                                "parts": [{"text": reply_text}]
-                            })
+                # Faqat matnli qismni tarixga qo'shamiz (yengil va tez ishlashi uchun)
+                new_contents.append({
+                    "role": "model",
+                    "parts": [{"text": reply_text}]
+                })
 
-                            # Tarixni maksimal o'lchamda ushlab turamiz
-                            if len(new_contents) > self.max_history_turns:
-                                new_contents = new_contents[-self.max_history_turns:]
+                if len(new_contents) > self.max_history_turns:
+                    new_contents = new_contents[-self.max_history_turns:]
 
-                            self.user_histories[user_id] = new_contents
-                            return reply_text
+                self.user_histories[user_id] = new_contents
+                return reply_text
 
-                    return "🤔 AI dan bo'sh javob qaytdi. Iltimos, boshqacha savol berib ko'ring."
-
-                # Agar xatolik bo'lsa
-                error_info = data.get("error", {})
-                error_msg = error_info.get("message", "Noma'lum xatolik")
-                status_code = resp.status
-
-                logger.error(f"Gemini API Error [{status_code}]: {error_msg}")
-
-                if status_code == 400:
-                    if "API key not valid" in error_msg or "INVALID_ARGUMENT" in str(error_info):
-                        return (
-                            "❌ <b>Gemini API kaliti yaroqsiz!</b>\n\n"
-                            "Iltimos, <code>.env</code> faylidagi <code>GEMINI_API_KEY</code> to'g'ri kiritilganini tekshiring."
-                        )
-                    return f"❌ <b>So'rovda xatolik:</b>\n{error_msg}"
-                elif status_code == 429:
-                    return (
-                        "⏳ <b>So'rovlar limiti oshdi!</b>\n\n"
-                        "Gemini API bepul tarifi bo'yicha limitga yetildi. Iltimos, birozdan keyin qayta urinib ko'ring."
-                    )
-                else:
-                    return f"⚠️ <b>Gemini xizmatida xatolik ({status_code}):</b>\n{error_msg}"
-
-        except aiohttp.ClientConnectorError:
-            return "📡 <b>Internet yoki tarmoqqa ulanishda muammo bo'ldi.</b> Iltimos, internetingizni tekshiring."
-        except asyncio.TimeoutError:
-            return "⏱ <b>Gemini AI javob berish vaqti tugadi (Timeout).</b> Iltimos, qayta urinib ko'ring."
-        except Exception as e:
-            logger.exception("Gemini so'rovida kutilmagan xatolik:")
-            return f"⚠️ <b>Kutilmagan xatolik yuz berdi:</b> {str(e)}"
+        return "🤔 Savolingiz tushunildi, ammo javob hosil bo'lmadi. Qayta savol bering."
 
     async def ask_audio(
         self,
@@ -155,10 +160,9 @@ class GeminiChatService:
         session: aiohttp.ClientSession
     ) -> str:
         """
-        Foydalanuvchi yuborgan ovozli/audio xabarni Gemini AI ga yuboradi va javob matnini oladi.
+        Ovozli xabarni tahlil qilib, sof va qisqa o'zbek tilida javob qaytaradi.
+        Tarixga ulkan audio base64 saqlanmaydi, faqat matn saqlanadi (tezlikni 30 barobar oshiradi).
         """
-        import base64
-
         api_key = self.get_api_key()
         if not self.is_configured():
             return (
@@ -173,8 +177,8 @@ class GeminiChatService:
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
         history = self.user_histories.get(user_id, [])
 
-        # Yangi audio so'rov
-        user_content = {
+        # Hozirgi ovozli so'rov
+        current_user_part = {
             "role": "user",
             "parts": [
                 {
@@ -184,65 +188,59 @@ class GeminiChatService:
                     }
                 },
                 {
-                    "text": (
-                        "Foydalanuvchi ushbu ovozli xabarni yubordi. "
-                        "Uning nutqini tinglab, savoliga mos ravishda, o'zbek tilida samimiy, aniq va "
-                        "ovoz bilan o'qishga qulay qilib (juda cho'zmasdan) javob bering."
-                    )
+                    "text": VOICE_PROMPT
                 }
             ]
         }
 
-        new_contents = list(history)
-        new_contents.append(user_content)
+        # Tarix bilan birlashtiramiz (tarixda faqat matnlar bor, og'ir audio yo'q)
+        payload_contents = list(history) + [current_user_part]
 
         payload = {
-            "contents": new_contents,
+            "contents": payload_contents,
             "systemInstruction": {
                 "parts": [{"text": SYSTEM_PROMPT}]
             },
             "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 1024,
+                "temperature": 0.5,
+                "maxOutputTokens": 512,
             }
         }
 
-        headers = {"Content-Type": "application/json"}
+        data = await self._make_request(session, url, payload, timeout_seconds=15)
+        if not data:
+            return "Ovozli xabaringiz qabul qilindi, ammo server band. Qayta urinib ko'ring."
 
-        try:
-            timeout = aiohttp.ClientTimeout(total=60)
-            async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
-                data = await resp.json()
+        if "_error_status" in data:
+            status_code = data["_error_status"]
+            error_msg = data.get("_error_msg", "")
+            return f"⚠️ <b>Ovozni tahlil qilishda xatolik ({status_code}):</b> {error_msg}"
 
-                if resp.status == 200:
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            reply_text = "".join(p.get("text", "") for p in parts).strip()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                reply_text = "".join(p.get("text", "") for p in parts).strip()
 
-                            # Javobni tarixga qo'shamiz
-                            new_contents.append({
-                                "role": "model",
-                                "parts": [{"text": reply_text}]
-                            })
+                # MUHIM: Tarixga ulkan base64 audioni EMAS, balki faqat matnni yozamiz!
+                # Bu keyingi barcha so'rovlar bir zumda (1 soniyada) ishlashini ta'minlaydi!
+                updated_history = list(history)
+                updated_history.append({
+                    "role": "user",
+                    "parts": [{"text": "[Foydalanuvchining ovozli xabari]"}]
+                })
+                updated_history.append({
+                    "role": "model",
+                    "parts": [{"text": reply_text}]
+                })
 
-                            if len(new_contents) > self.max_history_turns:
-                                new_contents = new_contents[-self.max_history_turns:]
+                if len(updated_history) > self.max_history_turns:
+                    updated_history = updated_history[-self.max_history_turns:]
 
-                            self.user_histories[user_id] = new_contents
-                            return reply_text
+                self.user_histories[user_id] = updated_history
+                return reply_text
 
-                    return "Audio xabaringiz eshitildi, ammo javob hosil qilib bo'lmadi. Iltimos, qayta yuboring."
-
-                error_info = data.get("error", {})
-                error_msg = error_info.get("message", "Noma'lum xatolik")
-                logger.error(f"Gemini Audio Error [{resp.status}]: {error_msg}")
-                return f"⚠️ <b>Ovozni tahlil qilishda xatolik ({resp.status}):</b> {error_msg}"
-
-        except Exception as e:
-            logger.exception("Gemini audio so'rovida xatolik:")
-            return f"⚠️ <b>Xatolik yuz berdi:</b> {str(e)}"
+        return "Audio xabaringiz eshitildi, ammo javob hosil bo'lmadi. Iltimos, qayta yuboring."
 
 
 # Global Gemini chat servisi

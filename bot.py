@@ -473,7 +473,16 @@ async def voice_audio_message_handler(message: types.Message):
                 session=http_session
             )
 
-            # Javobni TTS orqali ovozli xabarga aylantiramiz
+            # Agar xatolik bo'lsa ovozga aylantirmasdan to'g'ridan-to'g'ri matnni chiqaramiz
+            if reply_text.startswith("⚠️") or reply_text.startswith("❌") or reply_text.startswith("⏳"):
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                await send_split_message(message, reply_text)
+                return
+
+            # Javobni TTS orqali tabiiy ovozli xabarga aylantiramiz
             voice_file_to_clean = await generate_voice_message(reply_text, output_dir=DOWNLOADS_DIR)
 
             if voice_file_to_clean and os.path.exists(voice_file_to_clean):
@@ -506,6 +515,7 @@ async def voice_audio_message_handler(message: types.Message):
                 except Exception:
                     pass
                 await send_split_message(message, reply_text)
+
 
         except Exception as e:
             logger.exception("Ovozli xabarni qayta ishlashda xatolik:")

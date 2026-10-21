@@ -12,7 +12,7 @@ DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "downloads")
 
 # Google Gemini AI konfiguratsiyasi
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # Majburiy kanal obunasi (masalan: @kanalingiz yoki ID)
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "").strip()
