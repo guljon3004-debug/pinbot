@@ -806,34 +806,42 @@ async def process_pinterest_download(message: types.Message, pinterest_url: str)
                 f"📥 @{bot_username} orqali yuklab olindi."
             )
 
-            # 1. MP4 Videoni yuboramiz
+            # 1. MP4 Videoni yuborish va Audioni ajratishni BIR VAQTDA (PARALLEL) bajaramiz!
             fs_video = FSInputFile(video_filepath, filename="pinterest_video.mp4")
-            await message.reply_video(
-                video=fs_video,
-                caption=caption_video,
-                parse_mode="HTML",
-                supports_streaming=True,
-                duration=video_duration,
-                width=video_width,
-                height=video_height
+
+            async def _send_video():
+                return await message.reply_video(
+                    video=fs_video,
+                    caption=caption_video,
+                    parse_mode="HTML",
+                    supports_streaming=True,
+                    duration=video_duration,
+                    width=video_width,
+                    height=video_height
+                )
+
+            async def _process_audio():
+                return await process_video_audio(
+                    video_path=video_filepath,
+                    output_dir=DOWNLOADS_DIR,
+                    fallback_title=clean_title,
+                    fallback_artist="Pinterest"
+                )
+
+            # Ikkala vazifani bir vaqtda parallel bajaramiz!
+            video_res, audio_data = await asyncio.gather(
+                _send_video(),
+                _process_audio(),
+                return_exceptions=True
             )
-            logger.info(f"Video yuborildi ({time.time() - t_start:.2f}s)")
 
-            # Statusni yangilaymiz: musiqani aniqlash
-            try:
-                await status_msg.edit_text("🎵 <b>Videodagi musiqa aniqlanmoqda va MP3 ga o'tkazilmoqda...</b>", parse_mode="HTML")
-            except Exception:
-                pass
+            if isinstance(video_res, Exception):
+                logger.error(f"Videoni yuborishda xatolik: {video_res}")
+            else:
+                logger.info(f"Video yuborildi ({time.time() - t_start:.2f}s)")
 
-            # 2. Videodan MP3 audio ajratamiz va Shazam orqali qo'shiqni aniqlaymiz
-            audio_data = await process_video_audio(
-                video_path=video_filepath,
-                output_dir=DOWNLOADS_DIR,
-                fallback_title=clean_title,
-                fallback_artist="Pinterest"
-            )
-
-            if audio_data.get("has_audio") and audio_data.get("mp3_path"):
+            # Audio allaqachon parallel rejimda tayyor bo'lgan! Darhol MP3 jo'natamiz:
+            if not isinstance(audio_data, Exception) and audio_data.get("has_audio") and audio_data.get("mp3_path"):
                 mp3_file = audio_data["mp3_path"]
                 temp_files_to_clean.append(mp3_file)
 
@@ -872,6 +880,7 @@ async def process_pinterest_download(message: types.Message, pinterest_url: str)
                 await status_msg.delete()
             except Exception:
                 pass
+
 
     except ValueError as ve:
         await status_msg.edit_text(

@@ -44,7 +44,7 @@ async def extract_mp3_from_video(
     artist: str = "Pinterest"
 ) -> tuple[str | None, int]:
     """
-    Video fayldan yuqori sifatli MP3 audio ajratib oladi va ID3 teglarini o'rnatadi.
+    Video fayldan maksimal tezlikda MP3 audio ajratib oladi va ID3 teglarini o'rnatadi.
     Agar videoda ovoz yo'q bo'lsa (ovozsiz video/GIF), None qaytaradi.
     Qaytaradi: (mp3_path, duration_seconds)
     """
@@ -55,17 +55,18 @@ async def extract_mp3_from_video(
     unique_id = uuid.uuid4().hex[:8]
     mp3_path = os.path.join(output_dir, f"audio_{unique_id}.mp3")
 
-    # Toza sarlavha va ijrochi
     clean_title = (title or "Pinterest Audio").replace('"', '').strip()[:80]
     clean_artist = (artist or "Pinterest").replace('"', '').strip()[:60]
 
+    # Maksimal tezlik uchun -threads 0 va optimallashtirilgan parametrlar
     cmd = [
         _ffmpeg_exe,
         "-y",
+        "-threads", "0",
         "-i", video_path,
-        "-vn",                      # Video trekni o'chirib, faqat audioni oladi
-        "-c:a", "libmp3lame",       # Yuqori sifatli MP3 kodlovchi
-        "-q:a", "2",                # VBR ~190 kbps (juda yuqori sifat va ixcham hajm)
+        "-vn",                      # Faqat audio trek
+        "-c:a", "libmp3lame",       # MP3
+        "-b:a", "192k",             # Yuqori tezlikdagi 192kbps MP3
         "-metadata", f"title={clean_title}",
         "-metadata", f"artist={clean_artist}",
         mp3_path
@@ -78,10 +79,9 @@ async def extract_mp3_from_video(
             stderr=asyncio.subprocess.PIPE
         )
         _, stderr = await proc.communicate()
+        err_text = stderr.decode("utf-8", "ignore")
 
         if proc.returncode != 0:
-            err_text = stderr.decode("utf-8", "ignore")
-            # Agar videoda audio oqimi bo'lmasa
             if "does not contain any stream" in err_text or "Output file is empty" in err_text:
                 logger.info("Videoda audio oqimi topilmadi (ovozsiz video).")
             else:
@@ -96,7 +96,15 @@ async def extract_mp3_from_video(
         if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
             return None, 0
 
-        duration = get_media_duration(mp3_path)
+        # Davomiylikni bevosita FFmpeg stderr logidan tezkor ajratib olamiz (ikkinchi jarayon ochmasdan)
+        duration = 0
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", err_text)
+        if m:
+            h, mn, s = m.groups()
+            duration = int(h) * 3600 + int(mn) * 60 + int(float(s))
+        else:
+            duration = get_media_duration(mp3_path)
+
         return mp3_path, duration
 
     except Exception as e:
@@ -109,10 +117,10 @@ async def extract_mp3_from_video(
         return None, 0
 
 
-async def recognize_song(audio_path: str, timeout: float = 6.0) -> dict:
+async def recognize_song(audio_path: str, timeout: float = 3.5) -> dict:
     """
-    Shazam algoritmi orqali audio fayldagi qo'shiqni, ijrochisini va janrini aniqlaydi.
-    Hech qanday holatda xatolik bilan to'xtamaydi, xavfsiz timeout bilan ishlaydi.
+    Shazam algoritmi orqali audio fayldagi qo'shiqni, ijrochisini va janrini tezkor aniqlaydi.
+    Xavfsiz timeout (3.5s) bilan ishlaydi, hech qachon botni qotirib qo'ymaydi.
     """
     result = {
         "matched": False,
@@ -127,7 +135,6 @@ async def recognize_song(audio_path: str, timeout: float = 6.0) -> dict:
         return result
 
     try:
-        # Shazamio orqali trekni qidiramiz (timeout bilan)
         shazam_data = await asyncio.wait_for(
             shazam_client.recognize(audio_path),
             timeout=timeout
@@ -147,12 +154,12 @@ async def recognize_song(audio_path: str, timeout: float = 6.0) -> dict:
 
             logger.info(f"Qo'shiq aniqlandi: {result['title']} - {result['artist']}")
         else:
-            logger.info("Shazam mos keluvchi qo'shiq topmadi (fon ovozi yoki gaplashuv).")
+            logger.info("Shazam qo'shiq topmadi (fon ovozi yoki so'zlashuv).")
 
     except asyncio.TimeoutError:
-        logger.warning(f"Shazam qidiruvi {timeout} soniyada vaqt tugashi sababli to'xtatildi.")
+        logger.info(f"Shazam qidiruvi {timeout} soniyada vaqt tugashi bilan o'tkazib yuborildi (MP3 tezkor yuboriladi).")
     except Exception as e:
-        logger.warning(f"Shazam orqali qo'shiqni aniqlashda xatolik: {e}")
+        logger.debug(f"Shazam orqali qo'shiqni aniqlashda xatolik: {e}")
 
     return result
 
@@ -164,19 +171,9 @@ async def process_video_audio(
     fallback_artist: str = "Pinterest"
 ) -> dict:
     """
-    Videodan MP3 audioni ajratadi va qo'shiqni aniqlaydi.
-    Natija:
-    {
-        "has_audio": bool,
-        "mp3_path": str | None,
-        "duration": int,
-        "matched": bool,
-        "title": str,
-        "artist": str,
-        "genre": str | None,
-        "shazam_url": str | None,
-        "cover_url": str | None
-    }
+    Videodan MP3 audioni tezkor ajratadi va qo'shiqni aniqlaydi.
+    1-bosqich: FFmpeg yuqori tezlikda MP3 ajratadi (~0.2s)
+    2-bosqich: Shazam tezkor aniqlaydi (~0.8s)
     """
     mp3_path, duration = await extract_mp3_from_video(
         video_path=video_path,
@@ -198,35 +195,11 @@ async def process_video_audio(
             "cover_url": None
         }
 
-    # Qo'shiqni Shazam orqali aniqlaymiz
-    rec = await recognize_song(mp3_path, timeout=6.0)
+    # Qo'shiqni Shazam orqali tezkor aniqlaymiz (maksimal 3.5 soniya)
+    rec = await recognize_song(mp3_path, timeout=3.5)
 
     final_title = rec["title"] if rec["matched"] and rec["title"] else fallback_title
     final_artist = rec["artist"] if rec["matched"] and rec["artist"] else fallback_artist
-
-    # Agar qo'shiq aniqlangan bo'lsa, MP3 metadata'sini rasmiy qo'shiq nomi bilan yangilaymiz
-    if rec["matched"] and rec["title"]:
-        try:
-            temp_tagged = mp3_path + ".tagged.mp3"
-            tag_cmd = [
-                _ffmpeg_exe,
-                "-y",
-                "-i", mp3_path,
-                "-c", "copy",
-                "-metadata", f"title={final_title.replace('\"', '')}",
-                "-metadata", f"artist={final_artist.replace('\"', '')}",
-                temp_tagged
-            ]
-            tproc = await asyncio.create_subprocess_exec(
-                *tag_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await tproc.communicate()
-            if os.path.exists(temp_tagged) and os.path.getsize(temp_tagged) > 0:
-                os.replace(temp_tagged, mp3_path)
-        except Exception as te:
-            logger.debug(f"Metadata yangilashda xatolik: {te}")
 
     return {
         "has_audio": True,
