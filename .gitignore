@@ -20,3 +20,8 @@ downloads/
 venv/
 .venv/
 env/
+
+# Local chat memory & notes (contains personal keys/tokens)
+SUHBATLAR_XOTIRASI_3_BOT.md
+SUHBAT_XULOSASI_VA_QOLLANMA.md
+scratch_summary.txt
